@@ -336,7 +336,10 @@ def main():
     write_index(all_results, args.output)
     kept = [r for r in all_results if not r.get("skipped")]
     skipped = [r for r in all_results if r.get("skipped")]
-    print(f"\n共分析 {len(kept)} 个蓝图资产，结果在: {args.output}")
+    if kept:
+        print(f"\n共分析 {len(kept)} 个蓝图资产，结果在: {args.output}")
+    else:
+        print("\n未发现可分析的蓝图资产，未生成结果文件。")
     if skipped:
         print(f"另有 {len(skipped)} 个非蓝图资产（材质/贴图/模型等）已自动跳过")
 
