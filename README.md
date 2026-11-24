@@ -22,7 +22,9 @@ python bp_inspect.py "D:/UE_Project/TestDemo1/Content/WBP_HUD.uasset"
 | `<名>_nodes.csv` | 节点清单 + 中文作用说明 + 变量类型（Excel 可打开） |
 | `<名>_links.csv` | 引脚级连线表（源/目标节点·引脚·类型·GUID） |
 | `<名>_report.md` | 可读 Markdown 报告（节点清单 + 连线描述 + 悬空输入引脚 + 注释框 + 引用蓝图） |
-| `index.md` | 本次运行所有蓝图的汇总索引（图表/节点/连线数量 + 引用关系） |
+| `index.md` | 本次运行所有蓝图的汇总索引（图表/节点/连线数量 + 来源路径 + 引用关系） |
+
+> 不同目录下若有同名蓝图，第二个及以后会自动追加 4 位路径短哈希（如 `Shared_2140_report.md`），不会互相覆盖。
 
 ## 二、命令行参数（一般不用填）
 

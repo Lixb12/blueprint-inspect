@@ -21,8 +21,31 @@ import os
 import sys
 import glob
 import argparse
+import hashlib
+
+# 输出重定向到文件/管道时，Windows 默认 GBK 编码遇到 ✔/✖/中文 会抛 UnicodeEncodeError。
+# 启动即把标准流重配为 UTF-8；不支持重配的环境退回替换策略，保证打印不崩溃。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
 
 import bp_core
+
+# 记录输出目录内已占用的文件前缀，避免不同目录下的同名蓝图互相覆盖
+_used_prefixes = {}
+
+
+def _unique_prefix(base, asset_path, output_dir):
+    """返回不与已产出文件冲突的前缀；同名时追加路径短哈希。"""
+    abs_path = os.path.abspath(asset_path)
+    prefix = base
+    if prefix in _used_prefixes and _used_prefixes[prefix] != abs_path:
+        digest = hashlib.md5(abs_path.encode("utf-8")).hexdigest()[:4]
+        prefix = f"{base}_{digest}"
+    _used_prefixes[prefix] = abs_path
+    return prefix
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_OUTPUT = r"D:\Blueprint_Output"
@@ -134,17 +157,18 @@ def analyze_and_write(asset_path, output_dir, uasset_bin, make_csv=True, depth=0
                 "referenced": referenced, "paths": {}, "skipped": True}
 
     os.makedirs(output_dir, exist_ok=True)
+    prefix = _unique_prefix(base, asset_path, output_dir)
     paths = {}
 
     if make_csv:
-        nodes_csv = os.path.join(output_dir, f"{base}_nodes.csv")
-        links_csv = os.path.join(output_dir, f"{base}_links.csv")
+        nodes_csv = os.path.join(output_dir, f"{prefix}_nodes.csv")
+        links_csv = os.path.join(output_dir, f"{prefix}_links.csv")
         bp_core.write_node_csv(analysis["graphs"], analysis["info_by_path"], nodes_csv)
         bp_core.write_links_csv(analysis["links"], links_csv)
         paths["nodes"] = nodes_csv
         paths["links"] = links_csv
 
-    report_md = os.path.join(output_dir, f"{base}_report.md")
+    report_md = os.path.join(output_dir, f"{prefix}_report.md")
     write_report_md(analysis, base, report_md, referenced)
     paths["report"] = report_md
 
@@ -153,8 +177,9 @@ def analyze_and_write(asset_path, output_dir, uasset_bin, make_csv=True, depth=0
     for k, p in paths.items():
         print(f"{indent}    {k}: {p}")
 
-    return {"base": base, "asset_path": asset_path, "analysis": analysis,
-            "referenced": referenced, "paths": paths, "skipped": False}
+    return {"base": base, "prefix": prefix, "asset_path": asset_path,
+            "analysis": analysis, "referenced": referenced,
+            "paths": paths, "skipped": False}
 
 
 def inspect_recursive(asset_path, output_dir, uasset_bin, make_csv=True,
@@ -196,23 +221,24 @@ def inspect_recursive(asset_path, output_dir, uasset_bin, make_csv=True,
 
 
 def write_index(results, output_dir):
-    """全部分析完成后，在输出目录生成汇总 index.md（按资产名去重）。"""
+    """全部分析完成后，在输出目录生成汇总 index.md（按完整路径去重）。"""
     results = [r for r in results if not r.get("skipped")]
     if not results:
         return
-    seen_base, unique = set(), []
+    seen_path, unique = set(), []
     for r in results:
-        if r["base"] in seen_base:
+        key = os.path.abspath(r["asset_path"])
+        if key in seen_path:
             continue
-        seen_base.add(r["base"])
+        seen_path.add(key)
         unique.append(r)
     results = unique
     os.makedirs(output_dir, exist_ok=True)
     lines = ["# 蓝图分析汇总索引", ""]
     lines.append(f"共 {len(results)} 个资产，每个资产一份 report.md / nodes.csv / links.csv。")
     lines.append("")
-    lines.append("| 资产 | 图表 | 节点 | 连线 | 引用蓝图 | 报告 |")
-    lines.append("|---|---|---|---|---|---|")
+    lines.append("| 资产 | 来源路径 | 图表 | 节点 | 连线 | 引用蓝图 | 报告 |")
+    lines.append("|---|---|---|---|---|---|---|")
     for r in results:
         a = r["analysis"]
         graph_n = len(a["graphs"])
@@ -221,13 +247,14 @@ def write_index(results, output_dir):
         ref_n = len(r["referenced"])
         report_name = os.path.basename(r["paths"].get("report", ""))
         report_link = f"[{report_name}]({report_name})" if report_name else "—"
-        lines.append(f"| {r['base']} | {graph_n} | {node_n} | {link_n} | {ref_n} | {report_link} |")
+        src = r["asset_path"]
+        lines.append(f"| {r['base']} | `{src}` | {graph_n} | {node_n} | {link_n} | {ref_n} | {report_link} |")
     lines.append("")
     # 引用关系清单（按 源资产-目标 去重）
     ref_rows, ref_seen = [], set()
     for r in results:
         for ref in r["referenced"]:
-            key = (r["base"], ref["asset"])
+            key = (os.path.abspath(r["asset_path"]), ref["asset"])
             if key in ref_seen:
                 continue
             ref_seen.add(key)

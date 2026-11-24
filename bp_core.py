@@ -124,8 +124,12 @@ def _pin_type_of(node):
     return "unknown"
 
 
-def describe_node(node, graph=""):
-    """返回 dict: kind / cn_type / member / parent / title / desc / x / y。"""
+def describe_node(node):
+    """返回 dict: kind / cn_type / member / parent / title / desc / x / y。
+
+    title 为节点自身标题（不含图表前缀）；图表归属由 graphs 分组与 CSV 的 Graph 列表达，
+    避免在报告已分节的表格里重复冗长的图表路径。
+    """
     cls = node.get("class", "")
     name = node.get("name", "")
     props = node.get("properties", {})
@@ -143,8 +147,6 @@ def describe_node(node, graph=""):
         title_parts.append(member)
     title_parts.append(f"({name})")
     title = " · ".join(title_parts)
-    if graph:
-        title = f"{graph} » {title}"
 
     if kind == "function":
         action = MEMBER_CN.get(member, f"调用函数 {member}")
@@ -197,10 +199,17 @@ def describe_node(node, graph=""):
 
 
 def collect_graphs(exports):
-    """返回 {graph: [node, ...]}，仅保留带引脚的图表节点。"""
+    """返回 {graph: [node, ...]}。
+
+    保留带引脚的图表节点；注释框（EdGraphNode_Comment）没有引脚，也一并保留，
+    否则其文字批注会被直接丢弃。
+    """
     graphs = {}
     for node in exports:
-        if not node.get("pins"):
+        cls = node.get("class", "")
+        has_pins = bool(node.get("pins"))
+        is_comment = cls == "EdGraphNode_Comment"
+        if not (has_pins or is_comment):
             continue
         path = node.get("path", "")
         graph = path.rsplit(".", 1)[0] if "." in path else "(全局)"
@@ -323,6 +332,14 @@ def content_dir_from_asset(asset_path):
     return os.path.dirname(os.path.abspath(asset_path))
 
 
+def _norm_rel(rel):
+    """把相对路径规范化为小写、正斜杠、去掉扩展名，便于大小写/分隔符无关比对。"""
+    rel = rel.replace(os.sep, "/").replace("\\", "/")
+    if rel.lower().endswith(".uasset"):
+        rel = rel[:-len(".uasset")]
+    return rel.strip("/").lower()
+
+
 def resolve_game_path(game_path, content_dir):
     """/Game/Folder/X -> Content/Folder/X.uasset；找不到返回 None。"""
     if not game_path.startswith("/Game/"):
@@ -331,14 +348,16 @@ def resolve_game_path(game_path, content_dir):
     candidate = os.path.join(content_dir, rel + ".uasset")
     if os.path.isfile(candidate):
         return candidate
-    # 兜底：不区分大小写，按目录逐项匹配（处理盘符/中文路径大小写差异）
-    target_rel = rel.lower().replace("/", os.sep)
+    # 兜底：不区分大小写、不区分分隔符与扩展名差异，按目录逐项匹配
+    target_norm = _norm_rel(rel)
     for root, _dirs, files in os.walk(content_dir):
         for fn in files:
-            if fn.lower() == os.path.basename(candidate).lower():
-                full = os.path.join(root, fn)
-                if full[len(content_dir):].lower().strip(os.sep).replace(os.sep, "/") == target_rel:
-                    return full
+            if not fn.lower().endswith(".uasset"):
+                continue
+            full = os.path.join(root, fn)
+            rel_full = os.path.relpath(full, content_dir)
+            if _norm_rel(rel_full) == target_norm:
+                return full
     return None
 
 
@@ -349,8 +368,7 @@ def analyze(exports):
     label_by_path = {}
     info_by_path = {}
     for path, node in node_by_path.items():
-        graph = path.rsplit(".", 1)[0] if "." in path else ""
-        info = describe_node(node, graph)
+        info = describe_node(node)
         label_by_path[path] = info["title"]
         info_by_path[path] = info
     records = collect_links(exports, pin_guid_map, label_by_path)
