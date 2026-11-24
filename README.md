@@ -19,23 +19,33 @@ python bp_inspect.py "D:/UE_Project/TestDemo1/Content/WBP_HUD.uasset"
 
 | 文件 | 内容 |
 |---|---|
-| `<名>_nodes.csv` | 节点清单 + 中文作用说明（Excel 可打开） |
+| `<名>_nodes.csv` | 节点清单 + 中文作用说明 + 变量类型（Excel 可打开） |
 | `<名>_links.csv` | 引脚级连线表（源/目标节点·引脚·类型·GUID） |
-| `<名>_report.md` | 可读 Markdown 报告（节点清单 + 连线描述 + 关卡引用的蓝图类） |
+| `<名>_report.md` | 可读 Markdown 报告（节点清单 + 连线描述 + 悬空输入引脚 + 注释框 + 引用蓝图） |
+| `index.md` | 本次运行所有蓝图的汇总索引（图表/节点/连线数量 + 引用关系） |
 
 ## 二、命令行参数（一般不用填）
 
 ```powershell
-python bp_inspect.py <资产路径> [-o 输出目录] [-b uasset.exe路径] [--no-csv]
+# 单个文件
+python bp_inspect.py "D:/UE_Project/TestDemo1/Content/WBP_HUD.uasset"
+
+# 多个文件（一次拖入多个）
+python bp_inspect.py MainLevel.umap WBP_HUD.uasset BFL_ErosionCalc.uasset
+
+# 整个 Content 目录（自动递归扫描其中的蓝图/关卡）
+python bp_inspect.py "D:/UE_Project/TestDemo1/Content"
 ```
 
 | 参数 | 默认 | 说明 |
 |---|---|---|
-| 资产路径 | 必填 | `.uasset` / `.umap` / `.json`，可直接拖入窗口 |
+| 资产路径 | 必填 | `.uasset` / `.umap` / `.json` 文件，或一个目录；可传多个，可直接拖入窗口 |
 | `-o` | `D:\Blueprint_Output` | 输出目录 |
 | `-b` | 自动在下载目录查找 | `uasset.exe` 解析器路径 |
 | `--no-csv` | 关闭 | 不生成 CSV，只出 Markdown 报告 |
 | `--no-recursive` | 关闭 | 不跟随关卡引用的蓝图类，只分析当前文件（默认会自动递归分析关联蓝图） |
+
+**目录扫描**：传入文件夹时，会自动遍历其中所有 `.uasset` / `.umap`；材质、贴图、静态模型等不含图表节点的资产自动跳过，不产生空报告。
 
 **递归行为**：拖入 `.umap` 时，工具默认按引用路径自动找到 `Content/` 下关联的 `.uasset` 一并分析，输出里每个蓝图各一组 CSV/报告；自动去重、防循环；找不到对应文件会提示跳过。只想看当前文件时加 `--no-recursive`。
 
@@ -45,9 +55,9 @@ python bp_inspect.py <资产路径> [-o 输出目录] [-b uasset.exe路径] [--n
 
 ```
 bp_inspect.py      命令行入口（新手从这里进）
-bp_core.py         解析核心：节点识别、说明生成、连线提取
+bp_core.py         解析核心：节点识别、说明生成、连线提取、悬空引脚统计
 查看蓝图.bat        双击/拖拽启动器
-output/            生成结果（首次运行后自动创建）
+D:\Blueprint_Output  生成结果（首次运行后自动创建）
 ```
 
 ## 四、节点说明是怎么来的
@@ -74,5 +84,6 @@ output/            生成结果（首次运行后自动创建）
 
 ## 六、局限与可扩展项
 
-- 控件层级树（Widget 树）、变量默认值枚举、悬空引脚清单暂未输出，可在 `bp_core.py` 中按需扩展。
+- 控件层级树（Widget 树）暂未输出，可在 `bp_core.py` 中按需扩展。
+- 报告已包含：变量类型、未连接输入引脚清单、注释框文字、汇总索引 `index.md`。
 - 二进制兼容（UE 4.21–5.8）由外部 `uasset.exe` 解析器保证；本工具只消费其 JSON。

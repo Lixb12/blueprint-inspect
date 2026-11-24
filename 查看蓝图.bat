@@ -3,17 +3,18 @@ setlocal EnableDelayedExpansion
 cd /d "%~dp0"
 
 if "%~1"=="" (
-    echo Drag a .uasset / .umap / .json file here, then press Enter:
+    echo Drag one or more .uasset / .umap / .json files, or a folder, then press Enter:
     set /p ASSET=
+    set "ARGS=!ASSET!"
 ) else (
-    set "ASSET=%~1"
+    set "ARGS=%*"
 )
 
 echo.
-echo Processing: "!ASSET!"
+echo Processing: !ARGS!
 echo.
 
-python "%~dp0bp_inspect.py" "!ASSET!" -o "D:\Blueprint_Output"
+python "%~dp0bp_inspect.py" !ARGS! -o "D:\Blueprint_Output"
 
 if errorlevel 1 (
     echo.

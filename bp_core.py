@@ -12,7 +12,6 @@ import csv
 import os
 import subprocess
 import tempfile
-import argparse
 
 
 # ---------------------------------------------------------------------------
@@ -71,20 +70,6 @@ OPERATOR_CN = {
     "BooleanOr": "逻辑或",
 }
 
-# 节点类型 -> HTML 卡片配色（流程图用）
-KIND_COLOR = {
-    "event": "#c0392b",
-    "function": "#2980b9",
-    "variable_get": "#27ae60",
-    "variable_set": "#16a085",
-    "operator": "#8e44ad",
-    "branch": "#d35400",
-    "create_widget": "#2c3e50",
-    "function_io": "#7f8c8d",
-    "bound_event": "#c0392b",
-    "create_widget2": "#2c3e50",
-}
-
 
 def load_json(path):
     with open(path, encoding="utf-8") as f:
@@ -128,7 +113,18 @@ def node_kind(node):
     return "other", {"name": "", "parent": ""}
 
 
-def describe_node(node):
+def _pin_type_of(node):
+    """取节点第一个数据引脚的类型（用于变量节点推断变量类型）。"""
+    for pin in node.get("pins", []):
+        if pin.get("direction") == "out" and pin.get("type") not in ("exec", None):
+            return pin.get("type", "unknown")
+    for pin in node.get("pins", []):
+        if pin.get("direction") == "in" and pin.get("type") not in ("exec", None):
+            return pin.get("type", "unknown")
+    return "unknown"
+
+
+def describe_node(node, graph=""):
     """返回 dict: kind / cn_type / member / parent / title / desc / x / y。"""
     cls = node.get("class", "")
     name = node.get("name", "")
@@ -138,6 +134,7 @@ def describe_node(node):
     cn_type = NODE_CLASS_CN.get(cls, cls)
     member = ref.get("name", "")
     parent = short_parent(ref.get("parent", ""))
+    var_type = _pin_type_of(node) if kind in ("variable_get", "variable_set") else ""
 
     title_parts = [cn_type]
     if parent:
@@ -146,6 +143,8 @@ def describe_node(node):
         title_parts.append(member)
     title_parts.append(f"({name})")
     title = " · ".join(title_parts)
+    if graph:
+        title = f"{graph} » {title}"
 
     if kind == "function":
         action = MEMBER_CN.get(member, f"调用函数 {member}")
@@ -171,14 +170,23 @@ def describe_node(node):
         desc = "创建 UMG 控件实例"
     elif kind == "branch":
         desc = "条件判断：成立走 True，否则走 False"
+    elif cls == "EdGraphNode_Comment":
+        comment_text = props.get("CommentText") or props.get("NodesUnderComment") or ""
+        desc = f"注释框：{comment_text}" if comment_text else "注释框（无文字）"
     else:
         desc = f"节点 {name}（类型 {cls}）"
+
+    comment_text = ""
+    if cls == "EdGraphNode_Comment":
+        comment_text = props.get("CommentText") or props.get("NodesUnderComment") or ""
 
     return {
         "kind": kind,
         "cn_type": cn_type,
         "member": member,
         "parent": parent,
+        "var_type": var_type,
+        "comment": comment_text,
         "title": title,
         "desc": desc,
         "name": name,
@@ -257,14 +265,33 @@ def parse_asset(asset_path, uasset_bin=""):
             raise SystemExit("需要 uasset.exe：用 --uasset-bin 指定，或先手动导出 JSON")
         fd, tmp = tempfile.mkstemp(suffix=".json", prefix="bp_")
         os.close(fd)
-        subprocess.run([uasset_bin, "--json", "-o", tmp, asset_path],
-                       check=True, capture_output=True, text=True)
+        try:
+            subprocess.run([uasset_bin, "--json", "-o", tmp, asset_path],
+                           check=True, capture_output=True, text=True)
+        except subprocess.CalledProcessError as e:
+            detail = (e.stderr or e.stdout or "").strip()
+            raise SystemExit(f"uasset.exe 解析失败: {os.path.basename(asset_path)}\n{detail}")
+        except FileNotFoundError:
+            raise SystemExit(f"找不到 uasset.exe: {uasset_bin}")
         data = load_json(tmp)
         os.remove(tmp)
     exports = data.get("exports", [])
     imports = data.get("imports", [])
     base = os.path.splitext(os.path.basename(asset_path))[0]
     return exports, imports, base
+
+
+def is_blueprint_asset(exports):
+    """依据导出项里是否含蓝图/图表节点，判断这是不是可分析的蓝图或关卡脚本。
+
+    材质、贴图、静态模型、Niagara 系统等导出项里没有 K2/EdGraph 节点，判为 False。
+    """
+    bp_prefixes = ("K2Node_", "EdGraphNode_")
+    for node in exports:
+        cls = node.get("class", "")
+        if cls.startswith(bp_prefixes):
+            return True
+    return False
 
 
 def list_referenced_blueprints(imports):
@@ -284,16 +311,16 @@ def list_referenced_blueprints(imports):
 
 
 def content_dir_from_asset(asset_path):
-    """从一个资产路径反推 Content 目录（.uasset/.umap 所在的上一级 Content）。"""
+    """逐级向上查找 Content 目录；找不到则返回资产所在目录。"""
     d = os.path.dirname(os.path.abspath(asset_path))
-    # 常见布局: Content/XXX.uasset 或 Content/子目录/XXX.uasset，Content 即目录本身
-    if os.path.basename(d).lower() == "content":
-        return d
-    # 向上找一层名为 Content 的目录
-    parent = os.path.dirname(d)
-    if os.path.basename(parent).lower() == "content":
-        return parent
-    return d
+    while True:
+        if os.path.basename(d).lower() == "content":
+            return d
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    return os.path.dirname(os.path.abspath(asset_path))
 
 
 def resolve_game_path(game_path, content_dir):
@@ -304,6 +331,14 @@ def resolve_game_path(game_path, content_dir):
     candidate = os.path.join(content_dir, rel + ".uasset")
     if os.path.isfile(candidate):
         return candidate
+    # 兜底：不区分大小写，按目录逐项匹配（处理盘符/中文路径大小写差异）
+    target_rel = rel.lower().replace("/", os.sep)
+    for root, _dirs, files in os.walk(content_dir):
+        for fn in files:
+            if fn.lower() == os.path.basename(candidate).lower():
+                full = os.path.join(root, fn)
+                if full[len(content_dir):].lower().strip(os.sep).replace(os.sep, "/") == target_rel:
+                    return full
     return None
 
 
@@ -314,12 +349,47 @@ def analyze(exports):
     label_by_path = {}
     info_by_path = {}
     for path, node in node_by_path.items():
-        info = describe_node(node)
+        graph = path.rsplit(".", 1)[0] if "." in path else ""
+        info = describe_node(node, graph)
         label_by_path[path] = info["title"]
         info_by_path[path] = info
     records = collect_links(exports, pin_guid_map, label_by_path)
+    dangling = collect_dangling_inputs(exports, pin_guid_map)
     return {"graphs": graphs, "node_by_path": node_by_path,
-            "info_by_path": info_by_path, "links": records}
+            "info_by_path": info_by_path, "links": records, "dangling": dangling}
+
+
+def collect_dangling_inputs(exports, pin_guid_map):
+    """收集未连接的可见输入引脚（悬空引脚），按图表分组返回。"""
+    # 先收集所有被连线引用到的输入引脚 GUID
+    connected_targets = set()
+    for node in exports:
+        for pin in node.get("pins", []):
+            if pin.get("direction") != "out":
+                continue
+            for link in pin.get("links", []):
+                if link.get("pin"):
+                    connected_targets.add(link["pin"])
+
+    dangling = {}
+    for node in exports:
+        path = node.get("path", "")
+        graph = path.rsplit(".", 1)[0] if "." in path else "(全局)"
+        for pin in node.get("pins", []):
+            if pin.get("direction") != "in" or pin.get("hidden"):
+                continue
+            if pin.get("id") in connected_targets:
+                continue
+            # self / execute 这类框架引脚不算业务悬空引脚
+            if pin.get("name") in ("self", "execute", "then", "__WorldContext"):
+                continue
+            dangling.setdefault(graph, []).append({
+                "node": path,
+                "pin": pin.get("name", "?"),
+                "type": pin.get("type", "unknown"),
+                "default": pin.get("default", ""),
+            })
+    return dangling
 
 
 # ---------------------------------------------------------------------------
@@ -327,7 +397,8 @@ def analyze(exports):
 # ---------------------------------------------------------------------------
 
 def write_node_csv(graphs, info_by_path, path):
-    fieldnames = ["Graph", "NodeType", "Member", "NodeLabel", "Description", "NodeName", "NodeGuid"]
+    fieldnames = ["Graph", "NodeType", "Member", "VarType", "NodeLabel",
+                  "Description", "NodeName", "NodeGuid"]
     with open(path, "w", newline="", encoding="utf-8-sig") as f:
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
@@ -336,7 +407,8 @@ def write_node_csv(graphs, info_by_path, path):
                 info = info_by_path[node["path"]]
                 w.writerow({
                     "Graph": graph, "NodeType": info["cn_type"], "Member": info["member"],
-                    "NodeLabel": info["title"], "Description": info["desc"],
+                    "VarType": info.get("var_type", ""), "NodeLabel": info["title"],
+                    "Description": info["desc"],
                     "NodeName": info["name"], "NodeGuid": info["guid"],
                 })
 
